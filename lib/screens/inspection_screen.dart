@@ -10,6 +10,8 @@ import '../widgets/inspection_item_tile.dart';
 import '../widgets/common_widgets.dart';
 import 'voice_inspection_screen.dart';
 import 'inspection_result_page.dart';
+import 'hands_free_inspection_screen.dart';
+import '../controllers/api_client.dart';
 
 
 class InspectionScreen extends StatefulWidget {
@@ -97,6 +99,20 @@ class _InspectionScreenState extends State<InspectionScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('설비 정보를 확인할 수 없습니다.'),
+        ),
+      );
+      return;
+    }
+
+    // 보드 서버를 쓰면 핸즈프리 점검 화면으로 (항목은 서버가 검사기준 번호로 내려줌)
+    if (ApiConfig.useServer) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => HandsFreeInspectionScreen(
+            equipmentId: equipmentId,
+            equipmentName: _equipment?.name ?? equipmentId,
+          ),
         ),
       );
       return;

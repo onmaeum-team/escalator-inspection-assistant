@@ -2,13 +2,16 @@ import 'dart:async';  // 비동기 처리 (Future)
 import 'dart:typed_data';  // Uint8List (녹음 바이트)
 
 import 'package:flutter/material.dart';  // Flutter 화면 위젯
+import 'package:wakelock_plus/wakelock_plus.dart';  // 점검 중 화면 꺼짐 막기
 
 import '../constants/app_theme.dart';  // 앱 공통 색상
 import '../controllers/api_client.dart';  // 서버 호출 (ApiClient, ApiOffline, ApiError)
 import '../controllers/equipment_repository.dart';  // 제출 후 설비 이력 새로고침
+import '../controllers/voice_guide.dart';  // 보드 TTS 음성 재생 자리 (지금은 재생 안 함)
 import '../controllers/voice_listener.dart';  // 계속 듣기 VAD
 import '../models/inspection_session.dart';  // 서버 응답 모델
 import '../widgets/common_app_header.dart';  // 공통 상단 헤더
+import '../widgets/server_url_dialog.dart';  // 보드 주소 입력 창
 
 /// 핸즈프리 음성 점검 (보드 FastAPI 서버 연동)
 ///
@@ -30,10 +33,24 @@ class HandsFreeInspectionScreen extends StatefulWidget {  // 핸즈프리 점검
 
 enum _Phase { starting, listening, error }  // 화면 단계: 시작 중 / 듣는 중 / 오류
 
+/// 서버로 보낼 발화 하나 (연결이 끊기면 보관했다가 같은 순번으로 다시 보냄)
+class _Utterance {
+  final int seq;  // 발화 순번 (clientSeq). 다시 보내도 같은 번호 → 서버가 두 번 기록하지 않음
+  final Uint8List? wav;  // 녹음 (또는)
+  final String? text;  // 테스트 글자
+  const _Utterance(this.seq, this.wav, this.text);
+}
+
 class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {  // 화면 상태
   final _api = ApiClient.instance;  // 서버 호출 도우미
   late final VoiceListener _listener;  // 마이크 VAD (initState 에서 만듦)
   final _debugText = TextEditingController();  // 테스트용 글자 입력칸
+  final _voice = VoiceGuide();  // 보드 TTS 음성 재생 (audioId 가 오면)
+  bool _talking = false;  // 안내 음성을 재생하는 중 (이때는 듣지 않음)
+  int _sayId = 0;  // 안내 순번
+  bool _reviewing = false;  // 검토 화면이 열려 있음 (이때도 듣지 않음)
+  final List<_Utterance> _unsent = [];  // 연결이 끊겨 못 보낸 발화 (순서대로)
+  Timer? _reconnect;  // 끊겼을 때 5초마다 연결 확인
 
   _Phase _phase = _Phase.starting;  // 지금 화면 단계
   String? _error;  // 오류 문구
@@ -42,6 +59,8 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
   int _seq = 0;  // 발화 순번 (1, 2, 3…)
   int _busy = 0; // 서버 처리 중인 발화 수
   bool _speaking = false;  // 지금 말하는 중인지 (마이크 표시용)
+  double _level = 0;  // 지금 들어오는 소리 크기 (소리 막대 표시용)
+  DateTime _levelAt = DateTime.now();  // 소리 막대를 마지막으로 갱신한 시각 (너무 자주 갱신하지 않게)
 
   String? _transcript; // 방금 들은 말
   SessionItem? _lastItem; // 방금 기록된 항목
@@ -49,7 +68,10 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
   bool _isQuestion = false; // 안내 문구가 질문인지
   Future<void> _queue = Future.value(); // 발화를 들어온 순서대로 처리
 
-  int get _recorded => _items.values.where((i) => i.isDone).length;  // 기록한 항목 수 (미확인이 아닌 항목)
+  int? _srvRecorded;  // 서버가 알려 준 기록 수 (있으면 이걸 씀)
+  int? _srvTotal;  // 서버가 알려 준 전체 수 (말한 항목이 목록에 추가·취소되면 바뀜)
+  int get _recorded => _srvRecorded ?? _items.values.where((i) => i.isDone).length;  // 기록한 항목 수
+  int get _total => _srvTotal ?? _items.length;  // 전체 항목 수
 
   @override
   void initState() {  // 화면이 처음 열릴 때 한 번 실행
@@ -57,15 +79,27 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
     _listener = VoiceListener(  // VAD 만들기
       onUtterance: (wav) => _enqueue(wav: wav),  // 말 한 덩어리가 끝나면 서버로 보냄
       onLevel: (rms, speaking) {  // 소리가 들어올 때마다
-        if (speaking != _speaking && mounted) setState(() => _speaking = speaking);  // 말하는 중 여부가 바뀔 때만 화면 갱신
+        final now = DateTime.now();
+        if (!mounted) return;
+        if (speaking != _speaking || now.difference(_levelAt).inMilliseconds > 150) {  // 0.15초에 한 번만 화면 갱신
+          _levelAt = now;
+          setState(() {
+            _speaking = speaking;
+            _level = rms;
+          });
+        }
       },
     );
+    WakelockPlus.enable().catchError((_) {});  // 점검하는 동안 화면이 꺼지지 않게 (꺼지면 마이크도 멈춤)
     _begin();  // 점검 시작
   }
 
   @override
   void dispose() {  // 화면을 나갈 때 정리
     _listener.dispose();  // 마이크 끄기
+    _voice.stop();  // 읽던 안내 멈춤
+    _reconnect?.cancel();  // 연결 확인 멈춤
+    WakelockPlus.disable().catchError((_) {});  // 화면 꺼짐 다시 허용
     _debugText.dispose();  // 입력칸 정리
     super.dispose();
   }
@@ -108,27 +142,116 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
 
   /// 발화 하나를 순서대로 서버에 보냄 (clientSeq 로 재전송 중복 방지)
   void _enqueue({Uint8List? wav, String? text}) {  // 녹음(wav) 또는 테스트 글자(text) 하나를 보냄
+    if (_inspectionId == null) return;  // 점검이 시작 전이면 무시
+    final u = _Utterance(++_seq, wav, text);  // 순번을 붙여 발화 하나로 묶음
+    final waiting = [..._unsent, u];  // 못 보낸 발화가 있으면 그것부터 (말한 순서 유지)
+    _unsent.clear();
+    for (final x in waiting) {
+      _send(x);
+    }
+  }
+
+  void _send(_Utterance u) {  // 발화 하나를 처리 줄에 넣음
     final id = _inspectionId;  // 점검 번호
-    if (id == null) return;  // 점검이 시작 전이면 무시
-    final seq = ++_seq;  // 순번 1 증가
+    if (id == null) return;
     setState(() => _busy++);  // 처리 중 개수 +1 (화면에 '기록하는 중')
     _queue = _queue.then((_) async {  // 앞 발화 처리가 끝난 뒤에 이어서 처리 (순서 보장)
       try {
-        final r = await _api.sendUtterance(id, seq, wav: wav, text: text);  // POST /api/inspections/{id}/utterances
-        if (mounted) _apply(r);  // 결과를 화면에 반영
-      } on ApiOffline {  // 연결이 끊기면
-        if (mounted) setState(() => _guide = '보드 연결이 끊겼습니다. 다시 말씀해 주세요.');  // 다시 말해 달라고 안내
-      } on ApiError catch (e) {  // 서버가 거절하면 (예: STT 준비 안 됨)
-        if (mounted) setState(() => _guide = e.message.isEmpty ? e.code : e.message);  // 서버 문구 표시
+        final r = await _sendWithRetry(id, u);  // 끊기면 몇 번 다시 시도
+        if (r != null && mounted) _apply(r);  // 결과를 화면에 반영
       } finally {  // 성공이든 실패든
         if (mounted) setState(() => _busy--);  // 처리 중 개수 -1
       }
     });
   }
 
+  /// 끊기면 1·2·4초 기다렸다 같은 순번으로 다시 보냄. 그래도 안 되면 보관하고 null
+  Future<UtteranceResult?> _sendWithRetry(String id, _Utterance u) async {
+    const waits = [1, 2, 4];  // 다시 보내기 전 기다릴 시간 (초)
+    for (var i = 0; ; i++) {
+      if (_unsent.isNotEmpty) {  // 앞 발화가 이미 보관됐으면 이것도 보관 (순서가 바뀌지 않게)
+        _unsent.add(u);
+        return null;
+      }
+      try {
+        return await _api.sendUtterance(id, u.seq, wav: u.wav, text: u.text);  // POST /api/inspections/{id}/utterances
+      } on ApiOffline {  // 연결이 끊기면
+        if (i >= waits.length) {  // 다시 시도도 다 실패하면
+          _unsent.add(u);  // 보관
+          _startReconnect();  // 5초마다 연결 확인 시작
+          if (mounted) {
+            setState(() {
+              _guide = '보드 연결이 끊겼습니다. 방금 말씀은 보관했다가 연결되면 다시 보냅니다.';
+              _isQuestion = false;
+            });
+          }
+          return null;
+        }
+        if (mounted) setState(() => _guide = '보드에 다시 연결하는 중… (${i + 1}/${waits.length})');
+        await Future.delayed(Duration(seconds: waits[i]));  // 잠깐 기다렸다가 다시
+      } on ApiError catch (e) {  // 서버가 거절하면 (예: STT 준비 안 됨) 다시 보내도 같으니 그만
+        if (mounted) setState(() => _guide = e.message.isEmpty ? e.code : e.message);  // 서버 문구 표시
+        return null;
+      }
+    }
+  }
+
+  void _startReconnect() {  // 끊긴 동안 5초마다 서버 확인 → 살아나면 보관한 발화 보내기
+    _reconnect ??= Timer.periodic(const Duration(seconds: 5), (_) async {
+      if (_unsent.isEmpty || _busy > 0) return;  // 보낼 게 없거나 처리 중이면 다음에
+      try {
+        await _api.health();  // GET /api/health
+        _flushUnsent();  // 살아났으면 보관한 것 보내기
+      } catch (_) {}  // 아직 끊김
+    });
+  }
+
+  void _flushUnsent() {  // 보관한 발화를 순서대로 다시 보냄
+    _reconnect?.cancel();  // 확인 멈춤
+    _reconnect = null;
+    final waiting = [..._unsent];
+    _unsent.clear();
+    if (mounted && waiting.isNotEmpty) setState(() => _guide = '다시 연결됐습니다. 보관한 말 ${waiting.length}개를 보냅니다.');
+    for (final x in waiting) {
+      _send(x);
+    }
+  }
+
+  /// 보드 TTS 음성 재생. 재생하는 동안은 듣지 않음 (앱이 안내 소리를 받아쓰지 않게)
+  Future<void> _say(String text, {String? audioId}) async {
+    final my = ++_sayId;  // 이번 안내 번호 (앞 안내가 끊기고 새 안내가 나올 때 구분용)
+    _talking = true;
+    _syncListening();  // 듣기 멈춤
+    if (mounted) setState(() {});  // '안내 중…' 표시
+    await _voice.speak(text, audioId: audioId);  // 다 읽을 때까지 기다림
+    await Future.delayed(const Duration(milliseconds: 300));  // 스피커 울림이 사라질 때까지 잠깐
+    if (my != _sayId) return;  // 그사이 새 안내가 시작됐으면 그쪽이 끝날 때 다시 듣기
+    _talking = false;
+    _syncListening();  // 다시 듣기
+    if (mounted) setState(() {});  // 상태 문구 되돌리기
+  }
+
+  void _syncListening() => _listener.paused = _talking || _reviewing;  // 안내 중이거나 검토 중이면 멈춤
+
+  Future<void> _changeServer() async {  // 보드 주소 바꾸기
+    final changed = await showServerUrlDialog(context);  // 입력 창
+    if (!changed || !mounted) return;
+    if (_phase == _Phase.error) {
+      _begin();  // 오류 화면이었으면 새 주소로 다시 시작
+    } else if (_unsent.isNotEmpty) {
+      _flushUnsent();  // 점검 중이었으면 보관한 말을 새 주소로 보냄
+    } else {
+      setState(() {});  // 화면의 주소 표시만 갱신
+    }
+  }
+
   void _apply(UtteranceResult r) {  // 서버 결과를 화면 상태에 반영하는 함수
     setState(() {  // 화면 갱신
       if (r.transcript != null) _transcript = r.transcript;  // 받아쓴 문장 표시
+      if (r.total > 0) {  // 서버가 진행률을 보냈으면 그대로 씀
+        _srvRecorded = r.recorded;
+        _srvTotal = r.total;
+      }
       final item = r.item;  // 기록·변경된 항목
       if (item != null) {
         _items[item.itemCode] = item;  // 항목 결과 갱신
@@ -139,7 +262,8 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
       _isQuestion = r.kind == 'question' ||  // 질문이거나
           (r.command == 'finish' && r.missing.isNotEmpty);  // '점검 끝'인데 빠진 항목이 있으면 질문 모양(주황, 크게)으로
     });
-    // TODO: r.speech?.audioId 가 오면 GET /api/audio/{id} 를 재생 (보드 VITS)
+    final sp = r.speech;  // 안내 문장
+    if (r.kind != 'ignored' && sp?.audioId != null) _say(sp!.text, audioId: sp!.audioId);  // 보드 TTS 음성이 있으면 재생
     if (r.command == 'finish' && r.missing.isEmpty) _openReview();  // '점검 끝'이고 빠진 게 없으면 검토 화면으로
   }
 
@@ -162,7 +286,8 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
   Future<void> _openReview() async {  // 검토 화면 열기
     final id = _inspectionId;  // 점검 번호
     if (id == null) return;  // 없으면 무시
-    _listener.paused = true;  // 검토하는 동안 듣지 않음
+    _reviewing = true;
+    _syncListening();  // 검토하는 동안 듣지 않음
     await Navigator.push(  // 검토 화면으로 이동하고 돌아올 때까지 기다림
       context,
       MaterialPageRoute(
@@ -173,7 +298,8 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
         ),
       ),
     );
-    _listener.paused = false; // 검토 화면에서 돌아오면 다시 듣기
+    _reviewing = false;
+    _syncListening(); // 검토 화면에서 돌아오면 다시 듣기
   }
 
   @override
@@ -187,7 +313,7 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
       body: SafeArea(  // 노치·하단바를 피해서
         child: switch (_phase) {  // 단계에 따라 다른 화면
           _Phase.starting => const Center(child: CircularProgressIndicator()),  // 시작 중: 로딩
-          _Phase.error => _ErrorView(message: _error ?? '오류', onRetry: _begin),  // 오류: 오류 화면 + 다시 시도
+          _Phase.error => _ErrorView(message: _error ?? '오류', onRetry: _begin, onServer: _changeServer),  // 오류: 오류 화면 + 다시 시도 + 주소 바꾸기
           _Phase.listening => _listeningView(),  // 듣는 중: 아래 함수
         },
       ),
@@ -195,7 +321,7 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
   }
 
   Widget _listeningView() {  // 듣는 중 화면
-    final total = _items.length;  // 전체 항목 수
+    final total = _total;  // 전체 항목 수 (서버 기준)
     return ListView(  // 세로로 스크롤되는 목록
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),  // 여백
       children: [
@@ -237,10 +363,13 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
         const SizedBox(height: 12),
         Center(
           child: Text(
-            _busy > 0 ? '기록하는 중…' : (_speaking ? '듣고 있어요' : '말씀하세요'),  // 상태 문구
+            _talking ? '안내 중…' : _busy > 0 ? '기록하는 중…' : (_speaking ? '듣고 있어요' : '말씀하세요'),  // 상태 문구
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
         ),
+        const SizedBox(height: 8),
+        // 소리 막대: 마이크에 소리가 들어오는지, 기준선을 넘는지 확인용
+        _LevelBar(level: _level, threshold: _listener.threshold, paused: _listener.paused),
         const SizedBox(height: 24),
 
         // 안내 문구 (질문이면 크게)
@@ -303,8 +432,32 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
           ),
         ),
 
+        // 연결이 끊겨 보관 중인 말
+        if (_unsent.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 48,
+            child: FilledButton.tonal(
+              onPressed: _flushUnsent,  // 지금 다시 보내기
+              child: Text('보관한 말 ${_unsent.length}개 다시 보내기'),
+            ),
+          ),
+        ],
+
+        // 보드 주소 (실제 폰에서는 보드 IP 로 바꿔야 함)
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: Text('보드: ${ApiConfig.baseUrl}',  // 지금 주소
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            ),
+            TextButton(onPressed: _changeServer, child: const Text('주소 바꾸기')),
+          ],
+        ),
+
         // 테스트용: STT 없이 글자로 보내기
-        const SizedBox(height: 24),
+        const SizedBox(height: 12),
         ExpansionTile(  // 눌러야 펼쳐지는 칸
           tilePadding: EdgeInsets.zero,
           title: const Text('테스트: 글자로 보내기',  // 접힌 상태의 제목
@@ -606,6 +759,51 @@ class _ItemCard extends StatelessWidget {  // 항목 결과 카드
   }
 }
 
+class _LevelBar extends StatelessWidget {  // 마이크 소리 크기 막대 (기준선을 넘으면 말소리로 봄)
+  final double level;  // 지금 소리 크기
+  final double threshold;  // 말소리 기준
+  final bool paused;  // 듣기 멈춤 상태
+  const _LevelBar({required this.level, required this.threshold, required this.paused});
+
+  @override
+  Widget build(BuildContext context) {
+    final max = threshold * 3;  // 막대 끝 = 기준의 3배
+    final v = (level / max).clamp(0.0, 1.0);  // 막대 채움 비율
+    final t = (threshold / max).clamp(0.0, 1.0);  // 기준선 위치 (1/3 지점)
+    final over = level >= threshold;  // 기준을 넘었는지
+    return Column(
+      children: [
+        LayoutBuilder(
+          builder: (_, c) => Stack(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: v,
+                  minHeight: 10,
+                  backgroundColor: AppColors.border,
+                  color: over ? AppColors.normal : AppColors.textSecondary,  // 넘으면 초록
+                ),
+              ),
+              Positioned(  // 기준선
+                left: c.maxWidth * t,
+                top: 0,
+                bottom: 0,
+                child: Container(width: 2, color: AppColors.danger),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          paused ? '듣기 멈춤' : '마이크 소리 ${level.round()} / 기준 ${threshold.round()}',  // 숫자로도 표시
+          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+        ),
+      ],
+    );
+  }
+}
+
 class _Hint extends StatelessWidget {  // 음성 명령 안내 칩
   final String text;  // 칩 글자
   const _Hint(this.text);  // 생성자
@@ -625,7 +823,8 @@ class _Hint extends StatelessWidget {  // 음성 명령 안내 칩
 class _ErrorView extends StatelessWidget {  // 오류 화면 위젯
   final String message;  // 오류 문구
   final VoidCallback onRetry;  // 다시 시도 버튼을 눌렀을 때
-  const _ErrorView({required this.message, required this.onRetry});  // 생성자
+  final VoidCallback? onServer;  // 보드 주소 바꾸기 버튼을 눌렀을 때 (없으면 버튼 숨김)
+  const _ErrorView({required this.message, required this.onRetry, this.onServer});  // 생성자
 
   @override
   Widget build(BuildContext context) => Padding(  // 그리기
@@ -638,6 +837,12 @@ class _ErrorView extends StatelessWidget {  // 오류 화면 위젯
             Text(message, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),  // 오류 문구
             const SizedBox(height: 16),
             FilledButton(onPressed: onRetry, child: const Text('다시 시도')),  // 다시 시도 버튼
+            if (onServer != null) ...[  // 핸즈프리 화면에서만 주소 바꾸기 표시
+              const SizedBox(height: 8),
+              Text('보드: ${ApiConfig.baseUrl}',  // 지금 주소 (틀렸는지 확인)
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+              TextButton(onPressed: onServer, child: const Text('보드 주소 바꾸기')),  // 주소 입력 창
+            ],
           ],
         ),
       );

@@ -16,7 +16,7 @@ class VoiceListener {
     required this.onUtterance, // 말 한 덩어리가 끝나면 호출할 함수 (필수)
     this.onLevel, // 소리 크기가 들어올 때마다 호출할 함수 (화면 표시용, 선택)
     this.silenceMs = 1500, // 몇 ms 조용하면 문장이 끝난 걸로 볼지 (기본 1.5초)
-    this.ratio = 3.0, // 주변 소음의 몇 배 크기부터 말소리로 볼지
+    this.ratio = 2.5, // 주변 소음의 몇 배 크기부터 말소리로 볼지
   });
 
   final void Function(Uint8List wav) onUtterance; // 잘라낸 WAV를 받는 함수 (화면에서 서버로 보냄)
@@ -24,15 +24,26 @@ class VoiceListener {
   int silenceMs; // 문장 끝 판단 기준 (ms)
   double ratio; // 말소리 판단 배수
 
-  /// TTS 안내를 재생하는 동안 등 잠깐 듣지 않을 때 true
-  bool paused = false;
+  /// TTS 안내를 재생하는 동안 등 잠깐 듣지 않을 때 true.
+  /// 멈출 때 모으던 소리를 버림 → 안내 음성이 문장으로 잘려 서버로 가지 않음
+  bool _paused = false;
+  bool get paused => _paused; // 지금 멈춘 상태인지
+  set paused(bool v) {
+    if (v == _paused) return; // 같은 값이면 할 일 없음
+    _paused = v; // 상태 바꾸기
+    _pre.clear(); // 대기 칸 비우기
+    _preBytes = 0;
+    _buf.clear(); // 모으던 문장 버리기
+    _speaking = false; // 말하는 중 아님
+    _silentMs = 0;
+  }
 
   static const sampleRate = 16000; // 1초에 16000번 소리를 잼 (STT 모델 입력 규격)
   static const _bytesPerMs = 32; // 16000 샘플 × 2바이트 / 1000
   static const _prerollMs = 300; // 말 시작 전 0.3초를 앞에 붙임
   static const _minSpeechMs = 300; // 0.3초보다 짧은 소리는 버림 (기침, 툭 소리)
   static const _maxSpeechMs = 30000; // 한 덩어리 최대 30초
-  static const _minRms = 400.0; // 아주 조용한 곳에서 숨소리에 반응하지 않게
+  static const _minRms = 250.0; // 아주 조용한 곳에서 숨소리에 반응하지 않게
 
   final AudioRecorder _rec = AudioRecorder(); // 마이크 녹음기
   StreamSubscription<Uint8List>? _sub; // 마이크 소리 조각을 계속 받는 구독 (null이면 안 듣는 중)
@@ -45,6 +56,9 @@ class VoiceListener {
   double _noise = 300; // 주변 소음 RMS 추정치 (조용할 때 계속 갱신)
 
   bool get isRunning => _sub != null; // 듣는 중이면 true
+
+  /// 지금 '말소리'로 보는 기준 크기 (화면의 소리 막대에 표시)
+  double get threshold => math.max(_noise * ratio, _minRms);
 
   /// 마이크 권한이 없으면 false
   Future<bool> start() async {
@@ -76,7 +90,7 @@ class VoiceListener {
   }
 
   void _onChunk(Uint8List chunk) { // 마이크에서 소리 조각이 들어올 때마다 실행
-    if (paused) return; // 잠깐 멈춤 상태면 무시
+    if (_paused) return; // 잠깐 멈춤 상태면 무시
     final ms = chunk.length ~/ _bytesPerMs; // 이 조각이 몇 ms 길이인지
     final rms = _rms(chunk); // 이 조각의 소리 크기
     final loud = rms > math.max(_noise * ratio, _minRms); // 주변 소음의 3배보다 크면(그리고 최소값보다 크면) 말소리로 봄

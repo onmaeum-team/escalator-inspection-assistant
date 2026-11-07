@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'controllers/api_client.dart'; // 저장된 보드 주소 불러오기
 import 'screens/inspection_screen.dart';
 import 'screens/main_shell.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized(); // 앱 시작 전에 휴대폰 저장소를 쓰려면 필요
+  await ApiConfig.load(); // 저장해 둔 보드 주소 불러오기
   runApp(const MyApp());
 }
 

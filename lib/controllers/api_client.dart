@@ -2,6 +2,7 @@ import 'dart:convert'; // jsonDecode / jsonEncode / utf8 (서버 JSON 읽고 쓰
 import 'dart:typed_data'; // Uint8List (녹음한 WAV 바이트)
 
 import 'package:http/http.dart' as http; // HTTP 요청 패키지
+import 'package:shared_preferences/shared_preferences.dart'; // 보드 주소를 휴대폰에 저장
 
 import '../models/equipment.dart'; // 설비, 점검 이력 모델
 import '../models/inspection_session.dart'; // 점검 세션, 음성 처리 결과 모델
@@ -12,11 +13,48 @@ class ApiConfig {
 
   /// 백엔드가 준비되면 true 로. false 면 서버 호출 없이 온디바이스 DB만 사용.
   /// true 면 '음성으로 점검 시작'이 핸즈프리 점검 화면(서버 연동)으로 연결됨.
-  static const bool useServer = true;
+  static const bool useServer = false;
 
   /// 안드로이드 에뮬레이터에서 내 PC 의 localhost = 10.0.2.2
   /// 실제 폰: 노트북(가짜 보드) IP 또는 보드 핫스팟 IP. 예) http://192.168.0.10:8080
-  static const String baseUrl = 'http://10.0.2.2:8080';
+  static const String defaultBaseUrl = 'http://10.0.2.2:8080';
+
+  /// 지금 쓰는 서버 주소. 앱 시작 때 load() 가 저장된 값으로 바꿈 (핸즈프리 화면의 '보드 주소'에서 변경)
+  static String baseUrl = defaultBaseUrl;
+  static const _prefKey = 'board_base_url'; // 휴대폰에 저장할 때 쓰는 이름
+
+  /// 앱 시작 때 한 번: 저장해 둔 보드 주소 불러오기 (없으면 기본값)
+  static Future<void> load() async {
+    try {
+      final p = await SharedPreferences.getInstance(); // 휴대폰 저장소 열기
+      baseUrl = p.getString(_prefKey) ?? defaultBaseUrl; // 저장된 주소가 있으면 그걸로
+    } catch (_) {} // 저장소를 못 쓰면 기본값 그대로
+  }
+
+  /// 입력한 주소를 다듬어 저장. 형식이 틀리면 null
+  ///   "192.168.0.10"                          → "http://192.168.0.10:8080"
+  ///   "https://abc123-8080.proxy.runpod.net"  → 그대로 (https 는 포트를 붙이지 않음, RunPod 용)
+  static Future<String?> save(String input) async {
+    var t = input.trim(); // 앞뒤 공백 제거
+    if (t.isEmpty) t = defaultBaseUrl; // 비우면 기본값으로
+    if (!t.startsWith('http://') && !t.startsWith('https://')) t = 'http://$t'; // http:// 가 없으면 붙임
+    final u = Uri.tryParse(t); // 주소로 해석
+    if (u == null || u.host.isEmpty) return null; // 해석이 안 되면 실패
+    final url = u.hasPort
+        ? '${u.scheme}://${u.host}:${u.port}' // 포트를 직접 쓴 경우 그대로
+        : u.scheme == 'https'
+            ? 'https://${u.host}' // https (RunPod 프록시 등) 는 기본 포트 443
+            : 'http://${u.host}:8080'; // http 인데 포트가 없으면 8080 (보드·노트북)
+    baseUrl = url; // 바로 적용
+    try {
+      final p = await SharedPreferences.getInstance(); // 휴대폰 저장소 열기
+      await p.setString(_prefKey, url); // 다음에 앱을 켜도 남도록 저장
+    } catch (_) {} // 저장 실패해도 이번 실행에는 적용됨
+    return url; // 저장한 주소
+  }
+
+  /// 보드 TTS 음성 파일 주소 (서버에 GET /api/audio/{id} 가 생기면 사용)
+  static Uri audioUrl(String audioId) => Uri.parse('$baseUrl/api/audio/${Uri.encodeComponent(audioId)}');
 
   static const Duration timeout = Duration(seconds: 5); // 일반 요청은 5초 안에 답이 없으면 끊김으로 봄
 

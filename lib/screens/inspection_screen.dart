@@ -10,6 +10,8 @@ import '../widgets/inspection_item_tile.dart';
 import '../widgets/common_widgets.dart';
 import 'voice_inspection_screen.dart';
 import 'inspection_result_page.dart';
+import 'hands_free_inspection_screen.dart';
+import '../controllers/api_client.dart';
 
 
 class InspectionScreen extends StatefulWidget {
@@ -97,6 +99,45 @@ class _InspectionScreenState extends State<InspectionScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('설비 정보를 확인할 수 없습니다.'),
+        ),
+      );
+      return;
+    }
+
+    // 보드 서버를 쓰면 핸즈프리 점검 화면으로 (항목은 서버가 검사기준 번호로 내려줌)
+    if (ApiConfig.useServer) {
+      // 점검 종류 고르기: 월간 자체점검(주기가 돌아온 항목만) / 정기검사(점검표 70개 전부)
+      final type = await showModalBottomSheet<String>(
+        context: context,
+        builder: (c) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.event_repeat),
+                title: const Text('월간 자체점검'),
+                subtitle: const Text('점검주기가 돌아온 항목만 ([별표 3] 자체점검기준)'),
+                onTap: () => Navigator.pop(c, 'self'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.fact_check_outlined),
+                title: const Text('정기검사'),
+                subtitle: const Text('점검표 70개 항목 전부 ([별표 2] 정기검사기준)'),
+                onTap: () => Navigator.pop(c, 'regular'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (type == null || !mounted) return;  // 고르지 않고 닫았으면 취소
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => HandsFreeInspectionScreen(
+            equipmentId: equipmentId,
+            equipmentName: _equipment?.name ?? equipmentId,
+            inspectionType: type,
+          ),
         ),
       );
       return;

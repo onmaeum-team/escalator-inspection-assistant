@@ -5,6 +5,7 @@ import '../controllers/equipment_repository.dart';
 import '../models/equipment.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/common_app_header.dart';
+import 'hands_free_inspection_screen.dart'; // 지난 점검 상세 화면 (InspectionDetailScreen)
 
 /// 프레임 2 (왼쪽) — 점검 기록: 내 담당 설비 검색 + 목록
 class HomeScreen extends StatefulWidget {
@@ -312,9 +313,14 @@ class _TimelineItem extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: AppCard(
-                onTap: () {
-                  // TODO: 프레임 4(점검 결과) 화면으로 이동
-                },
+                onTap: record.inspectionId == null // 점검 번호가 있으면 상세 화면으로
+                    ? null
+                    : () => Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => InspectionDetailScreen(
+                            inspectionId: record.inspectionId!,
+                            title: formatDate(record.date),
+                          ),
+                        )),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart'; // 카메라 QR 스캔
 
 import '../constants/app_theme.dart';
 import '../controllers/equipment_repository.dart';
@@ -6,19 +7,15 @@ import '../widgets/common_widgets.dart';
 import '../widgets/equipment_sheet.dart';
 import '../widgets/common_app_header.dart';
 
-enum ScanMode { qr, nfc }
-
-/// 프레임 1 — 설비 스캔 (QR / NFC)
+/// 프레임 1 — 설비 스캔 (QR)
 ///
 /// 스캔 → EquipmentSheet(바텀시트)
 ///   · 등록된 설비      : 이번 달 필수 항목 + [이력 보기] [점검 시작]
 ///   · 온디바이스 DB 설비 : [등록하고 이력 가져오기]
 ///   · DB에 없는 설비    : 이름/위치 입력 후 등록
 ///
-/// 실제 스캔 연동 (지금은 박스를 탭하면 '테스트용 QR 선택' 창이 뜸):
-///  - QR  : mobile_scanner 패키지 → _ScannerBox 를 MobileScanner 위젯으로 교체하고
-///          onDetect 에서 _handleQr(barcode.rawValue!) 호출
-///  - NFC : nfc_manager 패키지 → 태그에서 읽은 문자열로 _handleQr 호출
+/// QR: 박스를 누르면 카메라가 켜지고, 읽으면 _onDetect → _handleQr (읽고 나면 카메라 꺼짐)
+/// 박스를 길게 누르면 '테스트용 QR 선택' 창 (QR 코드가 없을 때 시연용)
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
 
@@ -28,11 +25,56 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> {
   final _repo = EquipmentRepository.instance;
-  ScanMode _mode = ScanMode.qr;
 
   bool _looking = false;
 
-  /// QR/NFC에서 읽은 문자열로 설비 조회
+  /// 카메라 (QR 만, 같은 코드를 연달아 읽지 않게). 박스를 누를 때만 켬
+  final MobileScannerController _cam = MobileScannerController(
+    autoStart: false,
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    formats: const [BarcodeFormat.qrCode],
+  );
+  bool _camActive = false; // 지금 카메라가 켜져 있는지
+
+  /// 박스를 누르면 카메라 켜기 / 다시 누르면 끄기 (처음 켤 때 카메라 권한을 물어봄)
+  Future<void> _toggleCam() async {
+    if (_camActive) {
+      setState(() => _camActive = false);
+      await _camOff();
+    } else {
+      setState(() => _camActive = true);
+      await _camOn();
+    }
+  }
+
+  @override
+  void dispose() {
+    _cam.dispose(); // 카메라 끄기
+    super.dispose();
+  }
+
+  Future<void> _camOn() async {
+    try {
+      await _cam.start(); // 이미 켜져 있으면 오류가 날 수 있어 무시
+    } catch (_) {}
+  }
+
+  Future<void> _camOff() async {
+    try {
+      await _cam.stop();
+    } catch (_) {}
+  }
+
+  /// 카메라가 QR 을 읽었을 때
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    final raw = capture.barcodes.isEmpty ? null : capture.barcodes.first.rawValue; // 읽은 글자
+    if (raw == null || raw.isEmpty || _looking) return; // 비었거나 이미 처리 중이면 무시
+    if (mounted) setState(() => _camActive = false); // 읽었으면 카메라 끄기
+    await _camOff();
+    await _handleQr(raw); // 설비 조회 → 바텀시트 (다시 스캔하려면 박스를 누르면 됨)
+  }
+
+  /// QR에서 읽은 문자열로 설비 조회
   Future<void> _handleQr(String raw) async {
     if (_looking) return;
 
@@ -146,9 +188,7 @@ class _ScanScreenState extends State<ScanScreen> {
     return Scaffold(
       appBar: CommonAppHeader(
         title: '설비 스캔',
-        subtitle: _mode == ScanMode.qr
-            ? '설비의 QR 코드를 비춰주세요'
-            : '설비의 NFC 태그에 휴대폰을 대주세요',
+        subtitle: '설비의 QR 코드를 비춰주세요',
         showBackButton: false,
         showOfflineBadge: true,
       ),
@@ -171,19 +211,15 @@ class _ScanScreenState extends State<ScanScreen> {
                     padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                     children: [
                       Center(
-                        child: _ModeToggle(
-                          mode: _mode,
-                          onChanged: (m) => setState(() => _mode = m),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      Center(
                         child: Stack(
                           alignment: Alignment.center,
                           children: [
                             _ScannerBox(
-                              mode: _mode,
-                              onTap: _simulateScan,
+                              onTap: _toggleCam,
+                              onLongPress: _simulateScan,
+                              active: _camActive,
+                              controller: _cam,
+                              onDetect: _onDetect,
                             ),
                             if (_looking)
                               const CircularProgressIndicator(
@@ -195,7 +231,7 @@ class _ScanScreenState extends State<ScanScreen> {
                       const SizedBox(height: 8),
                       const Center(
                         child: Text(
-                          '박스를 탭하면 테스트용 QR을 고를 수 있어요',
+                          '박스를 누르면 카메라가 켜져요 · 길게 누르면 테스트용 QR',
                           style: TextStyle(
                             fontSize: 11,
                             color: AppColors.textSecondary,
@@ -238,80 +274,20 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 }
 
-/// QR | NFC 세그먼트 토글
-class _ModeToggle extends StatelessWidget {
-  final ScanMode mode;
-  final ValueChanged<ScanMode> onChanged;
-
-  const _ModeToggle({
-    required this.mode,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    Widget item(ScanMode m, String label) {
-      final selected = mode == m;
-
-      return GestureDetector(
-        onTap: () => onChanged(m),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          width: 64,
-          padding: const EdgeInsets.symmetric(vertical: 7),
-          decoration: BoxDecoration(
-            color: selected ? AppColors.surface : Colors.transparent,
-            borderRadius: BorderRadius.circular(999),
-            boxShadow: selected
-                ? [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 4,
-                      offset: const Offset(0, 1),
-                    ),
-                  ]
-                : null,
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: selected
-                  ? AppColors.primary
-                  : AppColors.textSecondary,
-            ),
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(3),
-      decoration: BoxDecoration(
-        color: AppColors.toggleBg,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          item(ScanMode.qr, 'QR'),
-          item(ScanMode.nfc, 'NFC'),
-        ],
-      ),
-    );
-  }
-}
-
 /// 어두운 스캐너 박스
 class _ScannerBox extends StatefulWidget {
-  final ScanMode mode;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress; // 길게 누르기 (테스트용 QR)
+  final bool active; // 카메라가 켜져 있으면 true
+  final MobileScannerController? controller; // 카메라 (없으면 그림만)
+  final void Function(BarcodeCapture)? onDetect; // QR 을 읽으면 호출
 
   const _ScannerBox({
-    required this.mode,
     required this.onTap,
+    this.onLongPress,
+    this.active = false,
+    this.controller,
+    this.onDetect,
   });
 
   @override
@@ -334,10 +310,10 @@ class _ScannerBoxState extends State<_ScannerBox>
   @override
   Widget build(BuildContext context) {
     const size = 220.0;
-    final isQr = widget.mode == ScanMode.qr;
 
     return GestureDetector(
       onTap: widget.onTap,
+      onLongPress: widget.onLongPress,
       child: Container(
         width: size,
         height: size,
@@ -345,9 +321,18 @@ class _ScannerBoxState extends State<_ScannerBox>
           color: AppColors.scannerBg,
           borderRadius: BorderRadius.circular(16),
         ),
-        child: isQr
-            ? Stack(
+        child: Stack(
                 children: [
+                  if (widget.active && widget.controller != null) // 켜져 있을 때만 카메라 화면
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: MobileScanner(
+                          controller: widget.controller!,
+                          onDetect: widget.onDetect,
+                        ),
+                      ),
+                    ),
                   const Positioned.fill(
                     child: CustomPaint(
                       painter: _CornerPainter(),
@@ -373,32 +358,25 @@ class _ScannerBoxState extends State<_ScannerBox>
                       ),
                     ),
                   ),
-                  const Center(
-                    child: Icon(
-                      Icons.qr_code_2,
-                      size: 44,
-                      color: Color(0xFF8A9099),
+                  if (!widget.active) // 카메라가 꺼져 있으면 안내
+                    const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.qr_code_2,
+                            size: 44,
+                            color: Color(0xFF8A9099),
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            '눌러서 카메라 켜기',
+                            style: TextStyle(fontSize: 13, color: Color(0xFFB0B6BF)),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
                 ],
-              )
-            : Center(
-                child: Container(
-                  width: size - 40,
-                  height: size - 40,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: const Color(0xFF4A505A),
-                      width: 2,
-                    ),
-                  ),
-                  child: const Icon(
-                    Icons.nfc,
-                    size: 52,
-                    color: Color(0xFF8A9099),
-                  ),
-                ),
               ),
       ),
     );

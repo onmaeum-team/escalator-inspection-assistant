@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:record/record.dart'; // 앱 시작 때 마이크 권한 요청
 
 import '../constants/app_theme.dart';
 import '../controllers/equipment_repository.dart';
@@ -24,6 +25,24 @@ class _MainShellState extends State<MainShell> {
   void initState() {
     super.initState();
     _repo.init();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _askMic()); // 첫 화면이 뜬 직후 마이크 권한 묻기
+  }
+
+  /// 앱을 켜자마자 마이크 권한을 물어 둠 (핸즈프리 점검 중에 묻지 않게).
+  /// 카메라 권한은 첫 화면(스캔)에서 카메라가 켜질 때 자동으로 물어봄.
+  Future<void> _askMic() async {
+    final rec = AudioRecorder();
+    try {
+      final ok = await rec.hasPermission(); // 처음이면 권한 창이 뜸
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('마이크 권한이 없으면 음성 점검을 할 수 없어요. 설정 > 앱 > 권한에서 허용해 주세요.'),
+        ));
+      }
+    } catch (_) {
+    } finally {
+      await rec.dispose();
+    }
   }
 
   @override

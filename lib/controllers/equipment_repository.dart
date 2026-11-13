@@ -157,9 +157,17 @@ class EquipmentRepository extends ChangeNotifier {
   }
 
   /// 내 담당 설비로 등록. 서버/온디바이스 DB 에 있는 설비면 이력이 바로 따라옴.
-  /// TODO: 명세서에 등록 API 가 생기면 여기서 호출
+  /// 새 설비면 서버(보드)에도 등록 (POST /api/escalators). 서버가 안 되면 폰에만 저장.
   Future<void> register(Equipment e) async {
     if (OnDeviceDb.find(e.id) == null) _custom[e.id] = e;
+    try {
+      await _api.registerEscalator(e); // 보드에 등록
+      _online = true;
+    } on ApiError {
+      _online = true; // 이미 보드에 있는 설비 (409) 등 → 그대로 진행
+    } on ApiOffline {
+      _online = false; // 보드 연결 안 됨 → 폰에만 저장
+    }
     if (!_mineIds.contains(e.id)) _mineIds.insert(0, e.id);
     await _saveEquipments();
     final cached = _historyCache[e.id];
@@ -223,7 +231,7 @@ class EquipmentRepository extends ChangeNotifier {
     return h.isEmpty ? null : h.first;
   }
 
-  /// 이번 달에 꼭 해야 하는 항목 (지연된 것 먼저)
+  /// 이번 달에 꼭 해야 하는 자체점검 항목 (지연된 것 먼저). 주기는 [별표 3] 자체점검기준
   List<DueItem> dueItems(String id, {DateTime? now}) {
     final today = now ?? DateTime.now();
     final monthStart = DateTime(today.year, today.month, 1);
@@ -234,7 +242,7 @@ class EquipmentRepository extends ChangeNotifier {
     for (final item in CycleItem.all) {
       DateTime? last;
       for (final r in history) {
-        if (r.checkedItems.contains(item.name)) {
+        if (r.checkedItems.contains(item.code) || r.checkedItems.contains(item.name)) { // 서버 이력은 번호, 예전 예시 이력은 이름
           last = r.date;
           break;
         }

@@ -145,11 +145,14 @@ class InspectionRecord {
 
 /// 주기별 점검 항목 (1 / 3 / 6 / 12개월)
 /// ※ 팀원의 InspectionItem(프레임 3 체크리스트)과 이름(title)을 맞춰 쓰면 됨.
+/// 자체점검 주기가 있는 항목. [별표 3] 자체점검기준 3. 에스컬레이터의 점검주기(회/월)를
+/// 정기검사기준 70개 항목 번호에 연결한 것 (서버 pipeline.py 의 SELF_CYCLE 과 같은 내용)
 class CycleItem {
-  final String name;
-  final int cycleMonths;
+  final String code; // 검사기준 번호. 예: 3.6.2
+  final String name; // 항목 이름
+  final int cycleMonths; // 1 = 매달, 3 = 3개월마다, 6 = 6개월마다
 
-  const CycleItem(this.name, this.cycleMonths);
+  const CycleItem(this.code, this.name, this.cycleMonths);
 
   String get cycleLabel => switch (cycleMonths) {
         1 => '월간',
@@ -158,12 +161,62 @@ class CycleItem {
       };
 
   static const all = [
-    CycleItem('핸드레일', 1),
-    CycleItem('스텝 라이저', 1),
-    CycleItem('스텝체인', 3),
-    CycleItem('구동체인', 3),
-    CycleItem('브레이크', 6),
-    CycleItem('안전장치 종합', 12),
+    CycleItem('3.2.1', '안전표시', 3),
+    CycleItem('3.2.2', '수동핸들 지침', 3),
+    CycleItem('3.2.3', '기계류 접근 출입문 안내', 3),
+    CycleItem('3.2.4', '비상정지장치 색상', 3),
+    CycleItem('3.2.5', '유지보수 및 점검 중 접근방지 수단', 3),
+    CycleItem('3.2.6', '자동 기동 운행방향 표시장치', 1),
+    CycleItem('3.3.1', '접근금지장치', 3),
+    CycleItem('3.3.2', '미끄럼방지장치', 3),
+    CycleItem('3.3.3', '장애물로부터의 보호', 1),
+    CycleItem('3.3.4', '방화셔터 인근의 에스컬레이터', 6),
+    CycleItem('3.3.5', '연속되는 에스컬레이터 사이 공간', 3),
+    CycleItem('3.3.6', '손잡이 바깥쪽 건물난간', 1),
+    CycleItem('3.3.7', '조명 및 콘센트', 1),
+    CycleItem('3.4.1', '조명 절연저항', 1),
+    CycleItem('3.4.2', '접지, 전동기 절연저항 및 배선', 3),
+    CycleItem('3.5.1', '디딤판 주행안내', 1),
+    CycleItem('3.5.2', '스텝/팔레트 사이의 틈새', 1),
+    CycleItem('3.5.3', '디딤판과 스커트 사이 틈새', 1),
+    CycleItem('3.5.4', '트레드 홈에 맞물리는 콤의 깊이', 1),
+    CycleItem('3.5.5', '손잡이 외형 및 가이드/덮개', 3),
+    CycleItem('3.5.6', '손잡이 틈새', 3),
+    CycleItem('3.6.1', '유지점검 및 보수용 정지스위치', 1),
+    CycleItem('3.6.2', '비상정지장치', 1),
+    CycleItem('3.6.3', '과부하(전류 증가)', 1),
+    CycleItem('3.6.4', '과부하(온도 증가)', 1),
+    CycleItem('3.6.5', '과속감지', 1),
+    CycleItem('3.6.6', '의도되지 않은 운행 방향의 역전', 1),
+    CycleItem('3.6.7', '보조브레이크의 미-작동 감지', 1),
+    CycleItem('3.6.8', '인장장치의 과도한 움직임', 1),
+    CycleItem('3.6.9', '디딤판체인의 파단과 과도한 늘어짐', 1),
+    CycleItem('3.6.10', '콤 안전장치', 1),
+    CycleItem('3.6.11', '연속 에스컬레이터 및 무빙워크의 추가 정지장치', 1),
+    CycleItem('3.6.12', '손잡이 인입구 장치', 1),
+    CycleItem('3.6.13', '스텝/팔레트 처짐 감지 장치', 1),
+    CycleItem('3.6.14', '스텝/팔레트 누락 감지 장치', 1),
+    CycleItem('3.6.15', '브레이크의 미-작동 감지장치', 1),
+    CycleItem('3.6.16', '손잡이의 속도 편차 감지', 1),
+    CycleItem('3.6.17', '점검용 덮개 열림', 1),
+    CycleItem('3.6.18', '과도한 정지거리', 1),
+    CycleItem('3.6.20', '수동핸들의 설치 감지', 1),
+    CycleItem('3.6.21', '점검운전 제어장치의 정지장치 작동 감지', 1),
+    CycleItem('3.6.22', '쇼핑 카트 및 수하물 카트 진입방지대 감지', 1),
+    CycleItem('3.7.1', '점검운전 제어장치', 3),
+    CycleItem('3.7.2', '수동 기동운전', 3),
+    CycleItem('3.7.3', '자동 기동 운전', 1),
+    CycleItem('3.8.1', '디딤판 주행', 1),
+    CycleItem('3.8.2', '손잡이 주행', 1),
+    CycleItem('3.8.3', '스커트 및 스커트 디플렉터', 3),
+    CycleItem('3.8.4', '기어오름방지장치', 1),
+    CycleItem('3.8.5', '접근금지장치', 1),
+    CycleItem('3.8.6', '미끄럼방지장치', 1),
+    CycleItem('3.8.7', '안전 보호판', 1),
+    CycleItem('3.8.8', '쇼핑카트', 1),
+    CycleItem('3.8.9', '옥외용 에스컬레이터의 추가요건', 6),
+    CycleItem('3.9.1', '속도, 전류 및 정지거리', 1),
+    CycleItem('3.9.2', '보조브레이크', 1),
   ];
 }
 

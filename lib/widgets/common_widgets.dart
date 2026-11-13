@@ -273,11 +273,19 @@ class DueChips extends StatelessWidget {
         ],
       );
     }
+    const maxShow = 6; // 칩이 너무 많으면 6개만 보이고 나머지는 '외 n개'
+    final shown = items.take(maxShow).toList();
     return Wrap(
       spacing: 6,
       runSpacing: 6,
       children: [
-        for (final d in items)
+        if (items.length > maxShow)
+          Pill(
+            label: '이번 달 ${items.length}개 항목',
+            color: AppColors.textPrimary,
+            background: AppColors.border,
+          ),
+        for (final d in shown)
           Pill(
             label: d.level == DueLevel.overdue
                 ? '${d.item.name} · ${d.lastDone == null ? '기록 없음' : '지연'}'

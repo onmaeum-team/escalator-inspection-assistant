@@ -13,7 +13,7 @@ class ApiConfig {
 
   /// 백엔드가 준비되면 true 로. false 면 서버 호출 없이 온디바이스 DB만 사용.
   /// true 면 '음성으로 점검 시작'이 핸즈프리 점검 화면(서버 연동)으로 연결됨.
-  static const bool useServer = false;
+  static const bool useServer = true;
 
   /// 안드로이드 에뮬레이터에서 내 PC 의 localhost = 10.0.2.2
   /// 실제 폰: 노트북(가짜 보드) IP 또는 보드 핫스팟 IP. 예) http://192.168.0.10:8080
@@ -156,6 +156,17 @@ class ApiClient {
     return records;
   }
 
+  /// 새 설비 등록 (POST /api/escalators). 이미 있으면 ApiError(409, ESCALATOR_ALREADY_EXISTS)
+  Future<Equipment> registerEscalator(Equipment e) async {
+    final res = await _req(() => _http.post(_u('/api/escalators'), // POST 요청
+        headers: {'Content-Type': 'application/json'}, // JSON 으로 보낸다고 알림
+        body: jsonEncode(e.toJson()))); // 설비 번호·이름·위치(·기본제원)
+    return Equipment.fromJson(_decode(res)); // 등록된 설비
+  }
+
+  /// 점검 보고서 주소 (폰 브라우저에서 열기)
+  Uri reportUri(String inspectionId) => _u('/api/inspections/${_id(inspectionId)}/report');
+
   // ───────────── 점검 세션 (핸즈프리 음성 점검) ─────────────
   //
   // | 기능        | Method | Endpoint                                        |
@@ -204,10 +215,11 @@ class ApiClient {
   Future<Map<String, dynamic>> health() async => // 연결 확인
       _decode(await _req(() => _http.get(_u('/api/health'))));
 
-  Future<InspectionSession> startInspection(String escalatorId, // 점검 시작
-      {String inspector = '점검자'}) async {
+  /// 점검 시작. [inspectionType] = 'self'(월간 자체점검: 주기가 돌아온 항목만) / 'regular'(정기검사: 70개 전부)
+  Future<InspectionSession> startInspection(String escalatorId,
+      {String inspector = '점검자', String inspectionType = 'self'}) async {
     final res = await _req(() => _http.post(_u('/api/inspections'), // POST 요청
-        body: {'escalatorId': escalatorId, 'inspector': inspector})); // 폼 값으로 설비 번호와 점검자 이름 전송
+        body: {'escalatorId': escalatorId, 'inspector': inspector, 'inspectionType': inspectionType})); // 폼 값으로 설비 번호, 점검자, 점검 종류 전송
     return InspectionSession.fromJson(_decode(res)); // 점검 번호와 항목 목록
   }
 

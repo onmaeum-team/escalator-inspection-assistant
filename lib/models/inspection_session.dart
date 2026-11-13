@@ -110,11 +110,22 @@ class InspectionResultData {
   final Map<String, int> summary; // 적합·부적합·해당없음·미확인 개수
   final List<SessionItem> items; // 전체 항목 결과
   final bool submitted; // 제출했는지
-  const InspectionResultData(this.summary, this.items, this.submitted);
+  final String? inspector; // 점검자
+  final String? startedAt; // 점검 시작 시각 (ISO)
+  final String? submittedAt; // 제출 시각 (ISO, 제출 전이면 null)
+  final int? durationMinutes; // 소요 시간 (분)
+  final String? reportUrl; // 보고서 주소 (제출한 점검만)
+  const InspectionResultData(this.summary, this.items, this.submitted,
+      {this.inspector, this.startedAt, this.submittedAt, this.durationMinutes, this.reportUrl});
 
   factory InspectionResultData.fromJson(Map<String, dynamic> j) => InspectionResultData( // 서버 JSON → 검토 데이터
         {for (final e in _map(j['summary']).entries) e.key: (e.value as num).toInt()}, // 판정별 개수
         [for (final m in (j['items'] as List? ?? const [])) SessionItem.fromJson(_map(m))], // 항목 목록
         j['submitted'] == true, // 제출 여부
+        inspector: j['inspector'] as String?,
+        startedAt: j['startedAt'] as String?,
+        submittedAt: j['submittedAt'] as String?,
+        durationMinutes: (j['durationMinutes'] as num?)?.toInt(),
+        reportUrl: j['reportUrl'] as String?,
       );
 }

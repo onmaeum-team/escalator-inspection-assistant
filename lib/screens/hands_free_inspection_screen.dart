@@ -2,6 +2,7 @@ import 'dart:async';  // 비동기 처리 (Future)
 import 'dart:typed_data';  // Uint8List (녹음 바이트)
 
 import 'package:flutter/material.dart';  // Flutter 화면 위젯
+import 'package:url_launcher/url_launcher.dart';  // 보고서를 폰 브라우저로 열기
 import 'package:wakelock_plus/wakelock_plus.dart';  // 점검 중 화면 꺼짐 막기
 
 import '../constants/app_theme.dart';  // 앱 공통 색상
@@ -20,11 +21,13 @@ import '../widgets/server_url_dialog.dart';  // 보드 주소 입력 창
 class HandsFreeInspectionScreen extends StatefulWidget {  // 핸즈프리 점검 화면 (상태가 바뀌는 화면)
   final String equipmentId;  // 설비 번호 (예: esc-7)
   final String equipmentName;  // 설비 이름 (헤더에 표시)
+  final String inspectionType;  // 'self' 월간 자체점검 / 'regular' 정기검사
 
   const HandsFreeInspectionScreen({  // 생성자
     super.key,
     required this.equipmentId,
     required this.equipmentName,
+    this.inspectionType = 'self',
   });
 
   @override
@@ -110,7 +113,7 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
       _error = null;
     });
     try {
-      final s = await _api.startInspection(widget.equipmentId);  // POST /api/inspections
+      final s = await _api.startInspection(widget.equipmentId, inspectionType: widget.inspectionType);  // POST /api/inspections
       _inspectionId = s.inspectionId;  // 점검 번호 저장
       _items  // 항목 목록 저장
         ..clear()
@@ -122,7 +125,9 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
       }
       setState(() {  // 듣는 화면으로 바꾸고 첫 안내
         _phase = _Phase.listening;
-        _guide = '점검을 시작했습니다. 항목과 결과를 말씀해 주세요.';
+        _guide = widget.inspectionType == 'regular'
+            ? '정기검사를 시작했습니다. 점검표 ${s.items.length}개 항목입니다. 항목과 결과를 말씀해 주세요.'
+            : '자체점검을 시작했습니다. 이번 달 대상 ${s.items.length}개 항목입니다. 항목과 결과를 말씀해 주세요.';
         _isQuestion = false;
       });
     } on ApiOffline {  // 서버에 연결이 안 되면
@@ -308,7 +313,7 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
       backgroundColor: AppColors.background,  // 배경색
       appBar: CommonAppHeader(  // 상단 헤더
         title: widget.equipmentName,  // 제목 = 설비 이름
-        subtitle: '버튼 없이, 아무 항목이나 말씀하세요',  // 부제
+        subtitle: '${widget.inspectionType == 'regular' ? '정기검사' : '자체점검'} · 버튼 없이, 아무 항목이나 말씀하세요',  // 부제
       ),
       body: SafeArea(  // 노치·하단바를 피해서
         child: switch (_phase) {  // 단계에 따라 다른 화면
@@ -419,6 +424,7 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
             _Hint('“몇 개 남았어?”'),
             _Hint('“점검 끝”'),
             _Hint('“건너뛰기”'),
+            _Hint('“나머지 건너뛰기”'),  // 남은 항목 전부 미점검 → 검토 화면
           ],
         ),
         const SizedBox(height: 24),
@@ -540,8 +546,12 @@ class _InspectionReviewScreenState extends State<InspectionReviewScreen> {  // �
       await _api.submit(widget.inspectionId, acknowledgeMissing: acknowledgeMissing);  // POST /api/inspections/{id}/submit
       await EquipmentRepository.instance.syncHistory(widget.equipmentId);  // 이력 화면에 새 점검이 보이게 새로고침
       if (!mounted) return;  // 화면이 닫혔으면 무시
-      ScaffoldMessenger.of(context)  // 아래 알림
-          .showSnackBar(const SnackBar(content: Text('점검 결과를 제출했습니다.')));
+      final report = _api.reportUri(widget.inspectionId);  // 보고서 주소 (보드에 저장됨)
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(  // 아래 알림 + '보고서 보기' 버튼
+        content: const Text('점검 결과를 제출했습니다. 보고서가 보드에 저장됐어요.'),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(label: '보고서 보기', onPressed: () => openReport(report)),
+      ));
       Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);  // 홈 화면으로 돌아가기 (뒤로가기 기록 지움)
     } on ApiError catch (e) {  // 서버가 거절하면
       if (!mounted) return;  // 화면이 닫혔으면 무시
@@ -670,6 +680,115 @@ class _InspectionReviewScreenState extends State<InspectionReviewScreen> {  // �
                       ),
                     ),
                   ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+/// 보고서를 폰 브라우저로 열기 (인쇄·PDF 저장은 브라우저에서)
+Future<void> openReport(Uri uri) async {
+  try {
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } catch (_) {}  // 브라우저를 못 열면 조용히 넘어감
+}
+
+/// 지난 점검 상세 (이력 화면에서 기록을 누르면). 읽기만 하고, 보고서를 열 수 있음
+class InspectionDetailScreen extends StatefulWidget {
+  final String inspectionId;  // 점검 번호
+  final String title;  // 헤더 제목 (점검 날짜)
+  const InspectionDetailScreen({super.key, required this.inspectionId, required this.title});
+
+  @override
+  State<InspectionDetailScreen> createState() => _InspectionDetailScreenState();
+}
+
+class _InspectionDetailScreenState extends State<InspectionDetailScreen> {
+  final _api = ApiClient.instance;
+  InspectionResultData? _data;  // 서버에서 받은 결과
+  String? _error;  // 오류 문구
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _error = null);
+    try {
+      final d = await _api.result(widget.inspectionId);  // GET /api/inspections/{id}/result
+      if (mounted) setState(() => _data = d);
+    } on ApiOffline {
+      if (mounted) setState(() => _error = '보드에 연결할 수 없습니다.');
+    } on ApiError catch (e) {
+      if (mounted) {
+        setState(() => _error = e.status == 404
+            ? '이 기록은 상세 결과가 없어요.\n(앱에 들어 있던 시연용 예시 기록이거나, 보드에 저장되기 전 기록이에요)'
+            : e.message);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final d = _data;
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      appBar: CommonAppHeader(title: '${widget.title} 점검', subtitle: widget.inspectionId),
+      body: SafeArea(
+        child: d == null
+            ? Center(
+                child: _error == null
+                    ? const CircularProgressIndicator()
+                    : _ErrorView(message: _error!, onRetry: _load),
+              )
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  _Box(  // 점검 정보
+                    color: Colors.white,
+                    child: Text(
+                      '점검자 ${d.inspector ?? '-'} · 소요 ${d.durationMinutes ?? '-'}분\n'
+                      '제출 ${(d.submittedAt ?? '-').replaceFirst('T', ' ')}',
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(  // 판정별 개수
+                    children: [
+                      for (final s in ['적합', '부적합', '미확인'])
+                        Expanded(
+                          child: _Box(
+                            color: Colors.white,
+                            child: Column(children: [
+                              Text('${d.summary[s] ?? 0}',
+                                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: _statusColor(s))),
+                              Text(s == '미확인' ? '미점검' : s,
+                                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                            ]),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (d.reportUrl != null)  // 제출한 점검이면 보고서 버튼
+                    SizedBox(
+                      height: 48,
+                      child: FilledButton.icon(
+                        onPressed: () => openReport(_api.reportUri(widget.inspectionId)),
+                        icon: const Icon(Icons.description_outlined),
+                        label: const Text('보고서 보기 (인쇄·PDF 저장)'),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  for (final it in [  // 부적합 → 미점검 → 나머지 순서
+                    ...d.items.where((i) => i.status == '부적합'),
+                    ...d.items.where((i) => i.status == '미확인'),
+                    ...d.items.where((i) => i.status != '부적합' && i.status != '미확인'),
+                  ])
+                    Padding(padding: const EdgeInsets.only(bottom: 8), child: _ItemCard(item: it)),  // 수정 버튼 없이
                 ],
               ),
       ),

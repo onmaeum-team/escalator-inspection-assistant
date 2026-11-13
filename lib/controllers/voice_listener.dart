@@ -15,7 +15,7 @@ class VoiceListener {
   VoiceListener({ // 만들 때 받는 설정값
     required this.onUtterance, // 말 한 덩어리가 끝나면 호출할 함수 (필수)
     this.onLevel, // 소리 크기가 들어올 때마다 호출할 함수 (화면 표시용, 선택)
-    this.silenceMs = 1500, // 몇 ms 조용하면 문장이 끝난 걸로 볼지 (기본 1.5초)
+    this.silenceMs = 1000, // 몇 ms 조용하면 문장이 끝난 걸로 볼지 (기본 1초. 말이 자주 끊기면 1500으로)
     this.ratio = 2.5, // 주변 소음의 몇 배 크기부터 말소리로 볼지
   });
 
@@ -120,7 +120,7 @@ class VoiceListener {
     _buf.add(chunk); // 말하는 중: 조각을 계속 모음
     _silentMs = loud ? 0 : _silentMs + ms; // 말소리면 조용한 시간 초기화, 아니면 늘림
     final totalMs = _buf.length ~/ _bytesPerMs; // 지금까지 모은 길이 (ms)
-    if (_silentMs >= silenceMs || totalMs >= _maxSpeechMs) { // 1.5초 조용했거나 30초를 넘으면 문장 끝
+    if (_silentMs >= silenceMs || totalMs >= _maxSpeechMs) { // 1초 조용했거나 30초를 넘으면 문장 끝
       final voicedMs = totalMs - _silentMs; // 실제로 말한 시간 (끝의 조용한 부분 제외)
       final pcm = _buf.takeBytes(); // 모은 소리를 꺼내고 비움
       _speaking = false; // 다시 대기 상태로

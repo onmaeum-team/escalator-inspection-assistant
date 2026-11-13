@@ -64,6 +64,7 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
   final _debugText = TextEditingController();  // 테스트용 글자 입력칸
   final _voice = VoiceGuide();  // 보드 TTS 음성 재생 (audioId 가 오면)
   bool _talking = false;  // 안내 음성을 재생하는 중 (이때는 듣지 않음)
+  bool _userPaused = false;  // 사용자가 마이크 버튼을 눌러 듣기를 멈춤 (발표 중 설명할 때 등)
   int _sayId = 0;  // 안내 순번
   bool _reviewing = false;  // 검토 화면이 열려 있음 (이때도 듣지 않음)
   final List<_Utterance> _unsent = [];  // 연결이 끊겨 못 보낸 발화 (순서대로)
@@ -254,7 +255,12 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
     if (mounted) setState(() {});  // 상태 문구 되돌리기
   }
 
-  void _syncListening() => _listener.paused = _talking || _reviewing;  // 안내 중이거나 검토 중이면 멈춤
+  void _syncListening() => _listener.paused = _talking || _reviewing || _userPaused;  // 안내 중·검토 중·사용자가 멈췄으면 듣지 않음
+
+  void _togglePause() {  // 마이크 버튼: 듣기 멈춤 ↔ 다시 듣기
+    setState(() => _userPaused = !_userPaused);
+    _syncListening();
+  }
 
   Future<void> _changeServer() async {  // 보드 주소 바꾸기
     final changed = await showServerUrlDialog(context);  // 입력 창
@@ -343,144 +349,119 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
     );
   }
 
-  Widget _listeningView() {  // 듣는 중 화면
+  Widget _listeningView() {  // 듣는 중 화면: 위에서부터 진행률 → 마이크 버튼 → 안내 카드 → 방금 기록 → 끝내기
     final total = _total;  // 전체 항목 수 (서버 기준)
-    return ListView(  // 세로로 스크롤되는 목록
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),  // 여백
+    final paused = _userPaused;
+    final busy = _busy > 0;
+    final micColor = paused ? AppColors.textSecondary : busy ? AppColors.warning : AppColors.primary;
+    final status = paused
+        ? '멈춤'
+        : _talking ? '안내 중…' : busy ? '기록하는 중…' : (_speaking ? '듣고 있어요' : '말씀하세요');
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
       children: [
-        // 진행률
-        Row(  // 가로 한 줄
+        // ① 진행률 (한 줄)
+        Row(
           children: [
-            const Text('기록한 항목',  // 왼쪽 글자
-                style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
-            const Spacer(),  // 가운데 빈칸
-            Text('$_recorded / $total',  // 오른쪽: '2 / 5'
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const Text('기록', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: total == 0 ? 0 : _recorded / total,
+                  minHeight: 6,
+                  backgroundColor: AppColors.border,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text('$_recorded / $total', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           ],
         ),
-        const SizedBox(height: 8),
-        ClipRRect(  // 모서리 둥글게
-          borderRadius: BorderRadius.circular(4),
-          child: LinearProgressIndicator(  // 진행 막대
-            value: total == 0 ? 0 : _recorded / total,  // 채워진 비율
-            minHeight: 8,  // 막대 두께
-            backgroundColor: AppColors.border,  // 빈 부분 색
-          ),
-        ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 28),
 
-        // 듣는 중 표시
+        // ② 마이크 버튼: 누르면 듣기 멈춤 / 다시 듣기
         Center(
-          child: AnimatedContainer(  // 크기가 부드럽게 바뀌는 원
-            duration: const Duration(milliseconds: 200),  // 0.2초 동안 바뀜
-            width: _speaking ? 128 : 112,  // 말하는 중이면 조금 커짐
-            height: _speaking ? 128 : 112,
-            decoration: BoxDecoration(  // 원 모양
-              color: _busy > 0 ? AppColors.warning : AppColors.primary,  // 처리 중이면 주황, 아니면 파랑
-              shape: BoxShape.circle,
-            ),
-            child: Icon(_busy > 0 ? Icons.hourglass_top : Icons.mic,  // 처리 중이면 모래시계, 아니면 마이크 아이콘
-                color: Colors.white, size: 48),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Center(
-          child: Text(
-            _talking ? '안내 중…' : _busy > 0 ? '기록하는 중…' : (_speaking ? '듣고 있어요' : '말씀하세요'),  // 상태 문구
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-        ),
-        const SizedBox(height: 8),
-        // 소리 막대: 마이크에 소리가 들어오는지, 기준선을 넘는지 확인용
-        _LevelBar(level: _level, threshold: _listener.threshold, paused: _listener.paused),
-        const SizedBox(height: 24),
-
-        // 안내 문구 (질문이면 크게)
-        if (_guide != null)  // 안내 문구가 있으면
-          _Box(  // 상자
-            color: _isQuestion ? AppColors.warningBg : AppColors.primaryBg,  // 질문이면 주황 배경, 아니면 파란 배경
-            child: Text(
-              _guide!,  // 안내 문장
-              style: TextStyle(
-                fontSize: _isQuestion ? 22 : 16,  // 질문이면 크게
-                fontWeight: FontWeight.bold,
-                color: _isQuestion ? AppColors.warning : AppColors.primary,  // 글자색
+          child: Semantics(
+            button: true,
+            label: paused ? '다시 듣기' : '듣기 멈춤',
+            child: GestureDetector(
+              onTap: _togglePause,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: !paused && _speaking ? 132 : 116,  // 말하는 중이면 살짝 커짐
+                height: !paused && _speaking ? 132 : 116,
+                decoration: BoxDecoration(
+                  color: paused ? Colors.white : micColor,
+                  shape: BoxShape.circle,
+                  border: paused ? Border.all(color: AppColors.border, width: 2) : null,
+                  boxShadow: paused ? null : [BoxShadow(color: micColor.withValues(alpha: 0.25), blurRadius: 16, spreadRadius: 2)],
+                ),
+                child: Icon(paused ? Icons.mic_off : busy ? Icons.hourglass_top : Icons.mic,
+                    color: paused ? AppColors.textSecondary : Colors.white, size: 52),
               ),
             ),
           ),
-        // 명령 버튼 (말이 잘 안 먹힐 때 한 번 누르기)
-        if (_isQuestion) ...[  // 질문 중: 이 항목 건너뛰기 / 방금 기록 취소
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(child: _CmdButton(label: '건너뛰기', icon: Icons.skip_next, onTap: () => _command('건너뛰기'))),
-              const SizedBox(width: 8),
-              Expanded(child: _CmdButton(label: '취소', icon: Icons.undo, onTap: () => _command('취소'))),
-            ],
-          ),
-        ] else if (_lastItem != null) ...[  // 방금 기록이 있으면: 취소만
-          const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerRight,
-            child: _CmdButton(label: '방금 기록 취소', icon: Icons.undo, onTap: () => _command('취소')),
-          ),
-        ],
-        if (_transcript != null) ...[  // 받아쓴 문장이 있으면
-          const SizedBox(height: 12),
-          _Box(  // 흰 상자
-            color: Colors.white,
+        ),
+        const SizedBox(height: 14),
+        Center(child: Text(status, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
+        const SizedBox(height: 4),
+        Center(
+          child: Text(paused ? '마이크를 누르면 다시 들어요' : '마이크를 누르면 잠시 멈춰요',
+              style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+        ),
+        const SizedBox(height: 24),
+
+        // ③ 안내 카드: 안내 문구 + 들은 말 + (질문이면) 건너뛰기·취소
+        if (_guide != null || _transcript != null)
+          _Box(
+            color: _isQuestion ? AppColors.warningBg : AppColors.primaryBg,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('방금 들은 말',  // 작은 제목
-                    style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-                const SizedBox(height: 4),
-                Text('“$_transcript”', style: const TextStyle(fontSize: 16)),  // 받아쓴 문장 (따옴표)
+                if (_guide != null)
+                  Text(
+                    _guide!,
+                    style: TextStyle(
+                      fontSize: _isQuestion ? 22 : 17,
+                      fontWeight: FontWeight.bold,
+                      color: _isQuestion ? AppColors.warning : AppColors.primary,
+                    ),
+                  ),
+                if (_transcript != null) ...[
+                  const SizedBox(height: 8),
+                  Text('들은 말  “$_transcript”',
+                      style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                ],
+                if (_isQuestion) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(child: _CmdButton(label: '건너뛰기', icon: Icons.skip_next, onTap: () => _command('건너뛰기'))),
+                      const SizedBox(width: 8),
+                      Expanded(child: _CmdButton(label: '취소', icon: Icons.undo, onTap: () => _command('취소'))),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
-        ],
-        if (_lastItem != null) ...[  // 방금 기록한 항목이 있으면
+
+        // ④ 방금 기록한 항목 + 취소
+        if (_lastItem != null) ...[
           const SizedBox(height: 12),
-          _ItemCard(item: _lastItem!),  // 항목 카드 (아래 _ItemCard)
+          _ItemCard(item: _lastItem!),
+          if (!_isQuestion)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () => _command('취소'),
+                icon: const Icon(Icons.undo, size: 18),
+                label: const Text('방금 기록 취소'),
+              ),
+            ),
         ],
-        const SizedBox(height: 24),
-
-        // 말로 할 수 있는 것
-        const Text('말로 할 수 있는 것',  // 음성 명령 안내 제목
-            style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-        const SizedBox(height: 8),
-        const Wrap(  // 줄이 넘치면 다음 줄로
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            _Hint('“취소”'),  // 말로 할 수 있는 명령들
-            _Hint('“다시 읽어 줘”'),
-            _Hint('“몇 개 남았어?”'),
-            _Hint('“점검 끝”'),
-            _Hint('“건너뛰기”'),
-            _Hint('“나머지 건너뛰기”'),  // 남은 항목 전부 미점검 → 검토 화면
-          ],
-        ),
-        const SizedBox(height: 24),
-
-        // 장갑을 벗었을 때를 위한 버튼
-        SizedBox(  // 버튼 크기
-          height: 56,
-          child: OutlinedButton(  // 테두리 버튼
-            onPressed: _finishByButton,  // 누르면 점검 끝 처리 (빠진 항목을 하나씩 물어봄)
-            child: const Text('점검 끝내고 검토하기', style: TextStyle(fontSize: 16)),  // 버튼 글자
-          ),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 48,
-          child: TextButton.icon(  // 남은 항목 전부 미점검으로 두고 바로 검토 화면
-            onPressed: () => _command('나머지 건너뛰기'),
-            icon: const Icon(Icons.fast_forward),
-            label: const Text('나머지 건너뛰기 (남은 항목 미점검)', style: TextStyle(fontSize: 15)),
-          ),
-        ),
 
         // 연결이 끊겨 보관 중인 말
         if (_unsent.isNotEmpty) ...[
@@ -488,49 +469,85 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
           SizedBox(
             height: 48,
             child: FilledButton.tonal(
-              onPressed: _flushUnsent,  // 지금 다시 보내기
+              onPressed: _flushUnsent,
               child: Text('보관한 말 ${_unsent.length}개 다시 보내기'),
             ),
           ),
         ],
+        const SizedBox(height: 28),
 
-        // 보드 주소 (실제 폰에서는 보드 IP 로 바꿔야 함)
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: Text('보드: ${ApiConfig.baseUrl}',  // 지금 주소
-                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-            ),
-            TextButton(onPressed: _changeServer, child: const Text('주소 바꾸기')),
-          ],
+        // ⑤ 끝내기
+        SizedBox(
+          height: 56,
+          child: FilledButton(
+            onPressed: _finishByButton,  // 빠진 항목을 하나씩 물어본 뒤 검토 화면
+            child: const Text('점검 끝내고 검토하기', style: TextStyle(fontSize: 16)),
+          ),
         ),
+        const SizedBox(height: 4),
+        Center(
+          child: TextButton(
+            onPressed: () => _command('나머지 건너뛰기'),  // 남은 항목 전부 미점검 → 바로 검토 화면
+            child: const Text('나머지 건너뛰고 검토하기'),
+          ),
+        ),
+        const SizedBox(height: 8),
 
-        // 테스트용: STT 없이 글자로 보내기
-        const SizedBox(height: 12),
-        ExpansionTile(  // 눌러야 펼쳐지는 칸
+        // ⑥ 도움말 · 설정 (평소엔 접어 둠)
+        ExpansionTile(
           tilePadding: EdgeInsets.zero,
-          title: const Text('테스트: 글자로 보내기',  // 접힌 상태의 제목
-              style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+          title: const Text('도움말 · 설정', style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+          childrenPadding: const EdgeInsets.only(bottom: 8),
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const Text('말로 할 수 있는 것', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            const SizedBox(height: 8),
+            const Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _Hint('“되돌려 줘”'),
+                _Hint('“몇 개 남았어?”'),
+                _Hint('“다시 읽어 줘”'),
+                _Hint('“건너뛰기”'),
+                _Hint('“나머지 건너뛰기”'),
+                _Hint('“점검 끝”'),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Text('마이크 소리 (막대가 선을 넘으면 말소리로 봄)',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            const SizedBox(height: 4),
+            _LevelBar(level: _level, threshold: _listener.threshold, paused: _listener.paused),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
-                  child: TextField(  // 글자 입력칸
-                    controller: _debugText,  // 입력칸 내용
+                  child: Text('보드: ${ApiConfig.baseUrl}',
+                      style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                ),
+                TextButton(onPressed: _changeServer, child: const Text('주소 바꾸기')),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _debugText,
                     decoration: const InputDecoration(
-                      hintText: '예) 스텝 롤러 고무 벗겨졌어 부적합',  // 예시 문구
+                      hintText: '테스트: 글자로 보내기',
                       isDense: true,
                       border: OutlineInputBorder(),
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                FilledButton(  // 보내기 버튼
-                  onPressed: () {  // 누르면
-                    final t = _debugText.text.trim();  // 입력한 글자 (앞뒤 공백 제거)
-                    if (t.isEmpty) return;  // 비었으면 무시
-                    _debugText.clear();  // 입력칸 비우기
+                FilledButton(
+                  onPressed: () {
+                    final t = _debugText.text.trim();
+                    if (t.isEmpty) return;
+                    _debugText.clear();
                     _enqueue(text: t);  // 녹음 대신 글자로 서버에 보냄
                   },
                   child: const Text('보내기'),

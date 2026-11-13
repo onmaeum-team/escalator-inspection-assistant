@@ -107,3 +107,6 @@ env.json
 lib/main.dart
 lib/main.dart
 .idea/workspace.xml
+.idea/libraries/Flutter_Plugins.xml
+.idea/workspace.xml
+/.idea

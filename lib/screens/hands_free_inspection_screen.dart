@@ -37,6 +37,20 @@ class HandsFreeInspectionScreen extends StatefulWidget {  // 핸즈프리 점검
 enum _Phase { starting, listening, error }  // 화면 단계: 시작 중 / 듣는 중 / 오류
 
 /// 서버로 보낼 발화 하나 (연결이 끊기면 보관했다가 같은 순번으로 다시 보냄)
+/// 질문 카드 아래 명령 버튼 (장갑 낀 손으로도 누르기 쉽게 높이 48)
+class _CmdButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+  const _CmdButton({required this.label, required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 48,
+        child: OutlinedButton.icon(onPressed: onTap, icon: Icon(icon, size: 20), label: Text(label, style: const TextStyle(fontSize: 15))),
+      );
+}
+
 class _Utterance {
   final int seq;  // 발화 순번 (clientSeq). 다시 보내도 같은 번호 → 서버가 두 번 기록하지 않음
   final Uint8List? wav;  // 녹음 (또는)
@@ -144,6 +158,10 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
       _error = msg;
     });
   }
+
+  /// 명령 버튼: 말 대신 글자로 같은 명령을 보냄 (STT 가 짧은 명령어를 자주 틀려서).
+  /// 음성과 같은 줄(순번)로 보내므로 앞에 말한 것보다 먼저 처리되지 않음.
+  void _command(String text) => _enqueue(text: text);
 
   /// 발화 하나를 순서대로 서버에 보냄 (clientSeq 로 재전송 중복 방지)
   void _enqueue({Uint8List? wav, String? text}) {  // 녹음(wav) 또는 테스트 글자(text) 하나를 보냄
@@ -390,6 +408,23 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
               ),
             ),
           ),
+        // 명령 버튼 (말이 잘 안 먹힐 때 한 번 누르기)
+        if (_isQuestion) ...[  // 질문 중: 이 항목 건너뛰기 / 방금 기록 취소
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(child: _CmdButton(label: '건너뛰기', icon: Icons.skip_next, onTap: () => _command('건너뛰기'))),
+              const SizedBox(width: 8),
+              Expanded(child: _CmdButton(label: '취소', icon: Icons.undo, onTap: () => _command('취소'))),
+            ],
+          ),
+        ] else if (_lastItem != null) ...[  // 방금 기록이 있으면: 취소만
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _CmdButton(label: '방금 기록 취소', icon: Icons.undo, onTap: () => _command('취소')),
+          ),
+        ],
         if (_transcript != null) ...[  // 받아쓴 문장이 있으면
           const SizedBox(height: 12),
           _Box(  // 흰 상자
@@ -433,8 +468,17 @@ class _HandsFreeInspectionScreenState extends State<HandsFreeInspectionScreen> {
         SizedBox(  // 버튼 크기
           height: 56,
           child: OutlinedButton(  // 테두리 버튼
-            onPressed: _finishByButton,  // 누르면 점검 끝 처리
+            onPressed: _finishByButton,  // 누르면 점검 끝 처리 (빠진 항목을 하나씩 물어봄)
             child: const Text('점검 끝내고 검토하기', style: TextStyle(fontSize: 16)),  // 버튼 글자
+          ),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 48,
+          child: TextButton.icon(  // 남은 항목 전부 미점검으로 두고 바로 검토 화면
+            onPressed: () => _command('나머지 건너뛰기'),
+            icon: const Icon(Icons.fast_forward),
+            label: const Text('나머지 건너뛰기 (남은 항목 미점검)', style: TextStyle(fontSize: 15)),
           ),
         ),
 
